@@ -8,9 +8,11 @@ def process_data(df):
     df['Check_Comments'] = ""
 
     for index, row in df.iterrows():
-        # המרת עמודות למספרים בצורה נקייה
-        accelya_val = abs(pd.to_numeric(row.get('Accelya Amount', 0), errors='coerce') or 0)
+        # המרת נתונים למספרים + ערך מוחלט לאקסליה
+        accelya_abs = abs(pd.to_numeric(row.get('Accelya Amount', 0), errors='coerce') or 0)
         grand_total = pd.to_numeric(row.get('GrandTotal', 0), errors='coerce') or 0
+        single_penalty = pd.to_numeric(row.get('SinglePenaltyFee', 0), errors='coerce') or 0
+        active_passengers = pd.to_numeric(row.get('ActivePassengersCount', 0), errors='coerce') or 0
         
         # סטטוסים
         ecom_status = str(row.get('ECOMMERCEORDERSTATUS', '')).strip()
@@ -19,32 +21,40 @@ def process_data(df):
         talma_status = str(row.get('TALMAORDERSTATUS', '')).strip()
 
         # --- 1. החרגות (כחול) ---
-        if ecom_status == 'SUCCESS' and talma_status in ['REFUND', 'NOT_FOR_REFUND']:
+        if oper_status == 'ACTIVE' or talma_status in ['REFUND', 'NOT_FOR_REFUND'] or ecom_status != 'SUCCESS':
             df.at[index, 'S_Color'] = 'blue'
             continue
 
         # --- 2. בדיקות כספיות ---
         if ecom_status == 'SUCCESS':
             
-            # מקרה א': דורש הפרש כספי (GrandTotal פחות Accelya)
-            if cust_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
-                diff = grand_total - accelya_val
+            # מקרה: AIRLINE_REFUND (הפרש רגיל)
+            if cust_status == 'UNDER_AIRLINE_REFUND':
+                diff = grand_total - accelya_abs
                 df.at[index, 'S'] = round(diff, 2)
-                # תנאי צבע: אם ההפרש בין -300 ל-50 זה תקין (ירוק), אחרת אדום
                 if -300 <= diff <= 50:
                     df.at[index, 'S_Color'] = 'green'
                 else:
                     df.at[index, 'S_Color'] = 'red'
 
-            # מקרה ב': דורש אחוזים (Accelya חלקי GrandTotal)
+            # מקרה: TICKET_RULE (הפרש בניכוי קנסות)
+            elif cust_status == 'UNDER_TICKET_RULE':
+                total_penalty = single_penalty * active_passengers
+                expected_refund = grand_total - total_penalty
+                diff_rule = expected_refund - accelya_abs
+                df.at[index, 'S'] = round(diff_rule, 2)
+                if -300 <= diff_rule <= 50:
+                    df.at[index, 'S_Color'] = 'green'
+                else:
+                    df.at[index, 'S_Color'] = 'red'
+
+            # מקרה: אחוזים (PARTIAL / CONSUMER LAW)
             elif cust_status in ['UNDER_PARTIAL_AIRLINE_REFUND', 'UNDER_CONSUMER_LAW']:
-                ratio = accelya_val / grand_total if grand_total != 0 else 0
+                ratio = accelya_abs / grand_total if grand_total != 0 else 0
                 df.at[index, 'S'] = f"{ratio:.2%}"
-                
                 if cust_status == 'UNDER_CONSUMER_LAW' and ratio > 2.0:
                     df.at[index, 'S_Color'] = 'purple'
-                    df.at[index, 'Check_Comments'] = "בדיקה ידנית - מעל 200%"
-                elif ratio > 0.25: # סף כללי לירוק ב-Partial/Consumer
+                elif ratio > 0.25:
                     df.at[index, 'S_Color'] = 'green'
                 else:
                     df.at[index, 'S_Color'] = 'red'
@@ -60,7 +70,7 @@ if uploaded_file:
     if uploaded_file.name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
     else:
-        df = pd.read_excel(uploaded_file)
+        df = pd.read_excel(uploaded_file, engine='openpyxl')
         
     processed_df = process_data(df)
     

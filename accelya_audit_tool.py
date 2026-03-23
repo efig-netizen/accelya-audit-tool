@@ -88,10 +88,14 @@ def process_data(df):
 st.set_page_config(page_title="Accelya Auditor", layout="wide")
 st.title("מערכת בדיקת Accelya")
 
-uploaded_file = st.file_uploader("Upload CSV from Snowflake", type=['csv'])
+uploaded_file = st.file_uploader("Upload CSV or Excel from Snowflake", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    df = pd.read_csv(uploaded_file)
+    if uploaded_file.name.endswith('.csv'):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+        
     processed_df = process_data(df)
     
     output = io.BytesIO()

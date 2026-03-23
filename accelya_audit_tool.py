@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 
-# --- הגדרות עיצוב לממשק (CSS) - Purple Rain Edition ---
+# --- הגדרות עיצוב לממשק (CSS) - Purple Rain Full Edition ---
 def apply_custom_style():
     st.markdown("""
         <style>
@@ -47,10 +47,6 @@ def apply_custom_style():
             border-radius: 20px;
             border: 2px dashed #ba68c8;
         }
-        .stSuccess {
-            background-color: #4a148c;
-            color: #e0d7ff;
-        }
         </style>
     """, unsafe_allow_html=True)
 
@@ -67,13 +63,15 @@ def process_data(df):
 
     for index, row in df.iterrows():
         # המרה בטוחה למספרים (ערך מוחלט לאקסליה)
-        accelya_abs = abs(pd.to_numeric(row.get('ACCELYA AMOUNT', 0), errors='coerce') or 0)
+        acc_raw = row.get('ACCELYA AMOUNT', 0)
+        accelya_abs = abs(pd.to_numeric(acc_raw, errors='coerce') or 0)
+        
         grand_total = pd.to_numeric(row.get('GRANDTOTAL', 0), errors='coerce') or 0
         single_penalty = pd.to_numeric(row.get('SINGLEPENALTYFEE', 0), errors='coerce') or 0
         pax_count = pd.to_numeric(row.get('ACTIVEPASSENGERSCOUNT', 0), errors='coerce') or 1
         total_extras = pd.to_numeric(row.get('TOTALEXTRAS', 0), errors='coerce') or 0
         
-        # פונקציית עזר לניקוי טקסט מהעמודות
+        # פונקציית עזר לניקוי טקסט
         def get_val(col):
             val = str(row.get(col, '')).strip().upper()
             return "" if val in ['NAN', 'NONE', 'NULL'] else val
@@ -87,17 +85,15 @@ def process_data(df):
         airline = get_val('OUTAIRLINES')
         extra_cat = get_val('EXTRA_CATEGORIES').lower()
 
-        # --- לוגיקת הגיבוי לסטטוס (Fallback) ---
-        # אם הסטטוס המקורי ריק, בודקים בעמודת UPDATE
+        # לוגיקת הגיבוי לסטטוס
         final_status = cust if cust != "" else update
 
-        # --- שלב החרגות (BLUE) ---
+        # --- 1. החרגות בכחול (BLUE) ---
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'
             continue
 
         if oper == 'ACTIVE':
-            # תנאי להחרגת ACTIVE: שאר הסטטוסים ריקים או ORDER_TRIP_CHANGED
             others_empty = all(s == "" for s in [cust, fin, talma])
             update_ignore = update in ["", "ORDER_TRIP_CHANGED"]
             if others_empty and update_ignore:
@@ -108,25 +104,37 @@ def process_data(df):
             df.at[index, 'S_COLOR'] = 'blue'
             continue
 
-        # --- שלב בדיקות כספיות (ירוק/אדום/סגול) ---
-        if ecom == 'SUCCESS':
+        # --- 2. תנאי מיוחד: SAFE CANCELLATION (ירוק) ---
+        if (ecom == 'SUCCESS' and 
+            oper == 'CANCELLED' and 
+            cust == 'UNDER_SAFE_CANCELLATION' and 
+            update == 'UNDER_TICKET_RULE' and 
+            single_penalty == 0):
             
-            # בדיקת החרגת מזוודות (J2, EY וכו')
-            apply_extras_reduction = airline in luggage_airlines and extra_cat == 'luggage'
-            base_amount = grand_total - total_extras if apply_extras_reduction else grand_total
+            diff_safe = grand_total - accelya_abs
+            df.at[index, 'S'] = round(diff_safe, 2)
+            df.at[index, 'S_COLOR'] = 'green'
+            df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation (OK)"
+            continue
 
-            if apply_extras_reduction:
-                df.at[index, 'CHECK_COMMENTS'] = "הופחת TOTALEXTRAS (מזוודות)"
+        # --- 3. בדיקות כספיות רגילות ---
+        if ecom == 'SUCCESS':
+            # בדיקת החרגת מזוודות
+            apply_extras = airline in luggage_airlines and extra_cat == 'luggage'
+            base_amount = grand_total - total_extras if apply_extras else grand_total
 
-            # 1. AIRLINE_REFUND
+            if apply_extras:
+                df.at[index, 'CHECK_COMMENTS'] = "הופחת TOTALEXTRAS (Luggage)"
+
+            # א. AIRLINE_REFUND
             if final_status == 'UNDER_AIRLINE_REFUND':
                 diff = base_amount - accelya_abs
                 df.at[index, 'S'] = round(diff, 2)
                 df.at[index, 'S_COLOR'] = 'green' if -300 <= diff <= 50 else 'red'
                 if cust == "" and update != "":
-                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | סטטוס מ-UPDATE").strip(" | ")
+                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | מ-UPDATE").strip(" | ")
 
-            # 2. TICKET_RULE
+            # ב. TICKET_RULE
             elif final_status == 'UNDER_TICKET_RULE':
                 if single_penalty > 0:
                     expected = base_amount - (single_penalty * pax_count)
@@ -134,59 +142,51 @@ def process_data(df):
                     df.at[index, 'S'] = round(diff_rule, 2)
                     df.at[index, 'S_COLOR'] = 'green' if -300 <= diff_rule <= 50 else 'red'
                 else:
-                    # הגנה מפני דאטה חסר בקנסות
                     df.at[index, 'S'] = "N/A (No Penalty)"
                     df.at[index, 'S_COLOR'] = 'purple'
                     df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | חסר קנס").strip(" | ")
                 
                 if cust == "" and update != "" and single_penalty > 0:
-                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | סטטוס מ-UPDATE").strip(" | ")
+                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | מ-UPDATE").strip(" | ")
 
-            # 3. PARTIAL / CONSUMER LAW (אחוזים)
+            # ג. PARTIAL / CONSUMER LAW (אחוזים)
             elif final_status in ['UNDER_PARTIAL_AIRLINE_REFUND', 'UNDER_CONSUMER_LAW']:
                 ratio = accelya_abs / grand_total if grand_total != 0 else 0
                 df.at[index, 'S'] = f"{ratio:.2%}"
                 
                 if final_status == 'UNDER_CONSUMER_LAW' and ratio > 2.0:
                     df.at[index, 'S_COLOR'] = 'purple'
-                    df.at[index, 'CHECK_COMMENTS'] = "בדיקה ידנית - מעל 200%"
+                    df.at[index, 'CHECK_COMMENTS'] = "בדיקה ידנית > 200%"
                 else:
                     df.at[index, 'S_COLOR'] = 'green' if ratio > 0.25 else 'red'
-                
-                if cust == "" and update != "" and not (final_status == 'UNDER_CONSUMER_LAW' and ratio > 2.0):
-                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | סטטוס מ-UPDATE").strip(" | ")
 
     return df
 
-# --- הרצת הממשק ---
+# --- ממשק Streamlit ---
 st.set_page_config(page_title="Purple Rain Auditor", layout="wide")
 apply_custom_style()
 
 st.markdown("<h1>☔ Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>'I only wanted to see you underneath the purple rain...'</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Monitoring the data storm with precision</p>", unsafe_allow_html=True)
 st.write("---")
 
-uploaded_file = st.file_uploader("גרור לכאן את קובץ ה-Snowflake שלך (CSV או Excel)", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("גרור קובץ CSV או Excel", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner('מעבד נתונים באווירה רגועה... 🎸'):
-        # קריאת הקובץ
+    with st.spinner('מעבד נתונים... 🎸'):
         try:
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
                 df = pd.read_excel(uploaded_file, engine='openpyxl')
             
-            # עיבוד
             processed_df = process_data(df)
             
-            # יצירת אקסל מעוצב בזיכרון
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                processed_df.to_excel(writer, index=False, sheet_name='Sheet1')
-                workbook, worksheet = writer.book, writer.sheets['Sheet1']
+                processed_df.to_excel(writer, index=False, sheet_name='Audit')
+                workbook, worksheet = writer.book, writer.sheets['Audit']
                 
-                # פורמטים לצביעה
                 formats = {
                     'green': workbook.add_format({'bg_color': '#C6EFCE'}),
                     'red': workbook.add_format({'bg_color': '#FFC7CE'}),
@@ -199,15 +199,15 @@ if uploaded_file:
                     if color in formats:
                         worksheet.set_row(row_num, None, formats[color])
 
-            st.success("העיבוד הושלם! הקובץ מוכן.")
+            st.success("העיבוד הושלם!")
             st.download_button(
-                label="📥 הורד תוצאות מעובדות",
+                label="📥 הורד תוצאות (Purple_Rain_Result)",
                 data=output.getvalue(),
                 file_name="Purple_Rain_Result.xlsx",
                 mime="application/vnd.ms-excel"
             )
         except Exception as e:
-            st.error(f"אופס, קרתה שגיאה בעיבוד הקובץ: {e}")
+            st.error(f"שגיאה בעיבוד: {e}")
 
 st.write("---")
-st.caption("Purple Rain Auditor v3.2 | Guitar Solos & Data Integrity")
+st.caption("Purple Rain Auditor v3.4 | Stable Edition")

@@ -3,20 +3,21 @@ import pandas as pd
 import io
 import re
 
-# --- 1. עיצוב ממשק נקי (Clean White & Dark Mode) ---
+# --- 1. עיצוב ממשק: רקע סגול, כפתור העלאה שחור, כותרות לבנות ---
 def apply_custom_style():
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
         
+        /* רקע סגול (לא כהה מדי) */
         .stApp {
-            background-color: #0f172a;
-            color: #f8fafc;
+            background: linear-gradient(135deg, #6d28d9 0%, #4c1d95 100%);
+            color: #ffffff;
             font-family: 'Inter', sans-serif;
         }
 
-        /* כותרות בלבן נקי */
-        h1, h2, h3 {
+        /* כותרות לבן נקי */
+        h1, h2, h3, p, span, label {
             color: #ffffff !important;
             font-weight: 700 !important;
             text-align: center;
@@ -26,53 +27,59 @@ def apply_custom_style():
             font-size: 3.5rem;
             margin-top: 2rem;
             margin-bottom: 0.5rem;
-            letter-spacing: -1px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
         }
 
         .subtitle {
             text-align: center;
-            color: #94a3b8;
+            color: #e9d5ff;
             font-size: 1.1rem;
             margin-bottom: 3rem;
+            font-weight: 400 !important;
         }
 
-        /* תיבת העלאה */
-        .upload-card {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+        /* תיבת העלאת קבצים בשחור */
+        section[data-testid="stFileUploader"] {
+            background-color: #000000 !important;
+            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 16px;
-            padding: 40px;
-            margin-bottom: 2rem;
+            padding: 20px;
+        }
+        
+        /* שינוי צבע הטקסט בתוך ה-Uploader ללבן כדי שייראו אותו על השחור */
+        section[data-testid="stFileUploader"] div, 
+        section[data-testid="stFileUploader"] span, 
+        section[data-testid="stFileUploader"] small {
+            color: #ffffff !important;
         }
 
-        /* כפתור הורדה בולט */
+        /* כפתור הורדה לבן עם טקסט שחור */
         .stDownloadButton button {
             width: 100%;
             background-color: #ffffff;
-            color: #0f172a;
+            color: #000000;
             border: none;
             padding: 1rem;
             border-radius: 8px;
             font-weight: 700;
             font-size: 1rem;
             transition: 0.2s;
-            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
         }
 
         .stDownloadButton button:hover {
-            background-color: #e2e8f0;
-            transform: scale(1.01);
+            background-color: #f1f5f9;
+            transform: translateY(-2px);
         }
 
-        /* הסתרת אלמנטים של Streamlit */
+        /* הסתרת אלמנטים מיותרים */
         header {visibility: hidden;}
         footer {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד המרכזית (v4.8 - All Rules Included) ---
+# --- 2. לוגיקת העיבוד המרכזית (v4.9 - ללא שינוי לוגי) ---
 def process_data(df):
-    # הגדרה 0: נרמול עמודות
     df.columns = [str(c).strip().upper() for c in df.columns]
     df['S'] = ""
     df['S_COLOR'] = ""
@@ -81,7 +88,7 @@ def process_data(df):
     luggage_airlines = ['J2', 'GQ', 'AZ', 'LA', 'UX', 'EY']
 
     for index, row in df.iterrows():
-        # שלב 1: אקסליה תמיד הופכת לפלוס (ערך מוחלט)
+        # אקסליה תמיד חיובית
         acc_raw = row.get('ACCELYA AMOUNT', 0)
         accelya_base = abs(pd.to_numeric(acc_raw, errors='coerce') or 0)
         
@@ -103,45 +110,38 @@ def process_data(df):
         extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower()
         search_pnr = str(row.get('SEARCHPNR', '')).strip()
 
-        # חוק הסתירה (הגדרה 9)
+        # קביעת סטטוס
         statuses = [cust, update]
         if 'UNDER_AIRLINE_REFUND' in statuses and any(s in statuses for s in ['UNDER_TICKET_RULE', 'UNDER_PARTIAL_AIRLINE_REFUND', 'UNDER_CONSUMER_LAW']):
             final_status = 'UNDER_AIRLINE_REFUND'
         else:
             final_status = cust if cust != "" else update
 
-        # החרגות כחולות (הגדרה 2)
-        if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
-            df.at[index, 'S_COLOR'] = 'blue'; continue
-        if ecom != 'SUCCESS':
+        # החרגות כחולות
+        if ecom != 'SUCCESS' or (ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']):
             df.at[index, 'S_COLOR'] = 'blue'; continue
 
-        # Safe Cancellation (הגדרה 3)
+        # Safe Cancellation
         if (ecom == 'SUCCESS' and oper == 'CANCELLED' and cust == 'UNDER_SAFE_CANCELLATION' and update == 'UNDER_TICKET_RULE' and single_penalty == 0):
             df.at[index, 'S'] = round(grand_total - accelya_base, 2)
             df.at[index, 'S_COLOR'] = 'green'
             df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation"
             continue
 
-        # --- שלב 2: לוגיקת הוספה לאקסליה (Addition Only) ---
+        # הוספות לאקסליה (Addition Only)
         adjusted_accelya = accelya_base
-        
-        # טרולי אל-על (הגדרה 10)
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
             adjusted_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | LY CarryOn Added"
-
-        # מזוודות (הגדרה 4 + עדכון רשימה)
         if airline in luggage_airlines and 'luggage' in extra_cat_raw:
             adjusted_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | Luggage Added"
 
-        # --- שלב 3: חישוב הפרשים ---
+        # חישוב הפרשים
         if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
             if final_status == 'UNDER_AIRLINE_REFUND':
                 res = grand_total - adjusted_accelya
             else: # TICKET_RULE
-                # החרגת PNR מספרי (הגדרה 11)
                 pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
                 if pnr_is_only_digits and single_penalty == 0:
                     res = grand_total - adjusted_accelya
@@ -157,52 +157,44 @@ def process_data(df):
                 df.at[index, 'S'] = round(res, 2)
                 df.at[index, 'S_COLOR'] = 'green' if -300 <= res <= 50 else 'red'
 
-        # חישוב אחוזים (הגדרות 7, 8)
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
             ratio = adjusted_accelya / grand_total if grand_total != 0 else 0
             df.at[index, 'S'] = f"{ratio:.2%}"
-            if final_status == 'UNDER_CONSUMER_LAW':
-                df.at[index, 'S_COLOR'] = 'green' if ratio >= 0.90 else 'red'
-            else: # PARTIAL
-                df.at[index, 'S_COLOR'] = 'green' if ratio >= 0.25 else 'red'
+            df.at[index, 'S_COLOR'] = 'green' if (final_status == 'UNDER_CONSUMER_LAW' and ratio >= 0.90) or (final_status == 'UNDER_PARTIAL_AIRLINE_REFUND' and ratio >= 0.25) else 'red'
 
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Audit Tool v4.8", layout="wide")
+st.set_page_config(page_title="Audit Tool v4.9", layout="centered")
 apply_custom_style()
 
 st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>Advanced Refund Verification Engine | Version 4.8</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>The Ultimate Audit Logic - Stable Build v4.9</p>", unsafe_allow_html=True)
 
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    st.markdown("<div class='upload-card'>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload Snowflake CSV/Excel", type=['csv', 'xlsx'])
-    
-    if uploaded_file:
-        with st.spinner("Analyzing..."):
-            try:
-                df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
-                processed_df = process_data(df)
-                
-                output = io.BytesIO()
-                with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                    processed_df.to_excel(writer, index=False, sheet_name='Audit')
-                    workbook, worksheet = writer.book, writer.sheets['Audit']
-                    formats = {
-                        'green': workbook.add_format({'bg_color': '#D1FAE5', 'font_color': '#064E3B'}),
-                        'red': workbook.add_format({'bg_color': '#FEE2E2', 'font_color': '#7F1D1D'}),
-                        'blue': workbook.add_format({'bg_color': '#DBEAFE', 'font_color': '#1E3A8A'}),
-                        'purple': workbook.add_format({'bg_color': '#F3E8FF', 'font_color': '#581C87'})
-                    }
-                    for row_num in range(1, len(processed_df) + 1):
-                        color = processed_df.iloc[row_num-1]['S_COLOR']
-                        if color in formats: worksheet.set_row(row_num, None, formats[color])
-                
-                st.markdown("<br>", unsafe_allow_html=True)
-                st.download_button("📥 DOWNLOAD REPORT", output.getvalue(), f"Audit_Report_{uploaded_file.name}.xlsx")
-                st.success("Audit completed successfully.")
-            except Exception as e:
-                st.error(f"Error: {e}")
-    st.markdown("</div>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("Upload your data file", type=['csv', 'xlsx'])
+
+if uploaded_file:
+    with st.spinner("Processing..."):
+        try:
+            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            processed_df = process_data(df)
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                processed_df.to_excel(writer, index=False, sheet_name='Audit')
+                workbook, worksheet = writer.book, writer.sheets['Audit']
+                formats = {
+                    'green': workbook.add_format({'bg_color': '#D1FAE5', 'font_color': '#064E3B'}),
+                    'red': workbook.add_format({'bg_color': '#FEE2E2', 'font_color': '#7F1D1D'}),
+                    'blue': workbook.add_format({'bg_color': '#DBEAFE', 'font_color': '#1E3A8A'}),
+                    'purple': workbook.add_format({'bg_color': '#F3E8FF', 'font_color': '#581C87'})
+                }
+                for row_num in range(1, len(processed_df) + 1):
+                    color = processed_df.iloc[row_num-1]['S_COLOR']
+                    if color in formats: worksheet.set_row(row_num, None, formats[color])
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_Result_{uploaded_file.name}.xlsx")
+            st.success("Analysis complete.")
+        except Exception as e:
+            st.error(f"Error: {e}")

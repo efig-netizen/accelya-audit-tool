@@ -55,7 +55,7 @@ def apply_custom_style():
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד המרכזית (v5.2 - כולל תנאי ACTIVE וכל ההגדרות) ---
+# --- 2. לוגיקת העיבוד המרכזית (v5.3 - כולל MEDICAL_CANCELLATION) ---
 def process_data(df):
     # הגדרה 0: נרמול שמות עמודות
     df.columns = [str(c).strip().upper() for c in df.columns]
@@ -89,27 +89,29 @@ def process_data(df):
         extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower()
         search_pnr = str(row.get('SEARCHPNR', '')).strip()
 
-        # הגדרה 1+9: קביעת סטטוס סופי (חוק הסתירה - תעדוף ל-Refund)
+        # הגדרה 1+9+12: קביעת סטטוס סופי (חוק הסתירה המחמיר)
+        # MEDICAL_CANCELLATION נחשב כמו TICKET_RULE אלא אם יש Refund
         statuses = [cust, update]
-        if 'UNDER_AIRLINE_REFUND' in statuses and any(s in statuses for s in ['UNDER_TICKET_RULE', 'UNDER_PARTIAL_AIRLINE_REFUND', 'UNDER_CONSUMER_LAW']):
+        
+        if 'UNDER_AIRLINE_REFUND' in statuses:
             final_status = 'UNDER_AIRLINE_REFUND'
+        elif 'MEDICAL_CANCELLATION' in statuses:
+            final_status = 'UNDER_TICKET_RULE' # טיפול לפי חוקי קנסות
+            df.at[index, 'CHECK_COMMENTS'] += "Medical Cancellation treated as Ticket Rule"
         else:
             final_status = cust if cust != "" else update
 
         # הגדרה 2: החרגות כחולות (Blue)
-        # תנאי 1: טופל בטלמה
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'; continue
             
-        # תנאי 2: הזמנה פעילה (ACTIVE) ללא נתוני החזר
         if oper == 'ACTIVE' and all(s == "" for s in [cust, fin, talma]) and update in ["", "ORDER_TRIP_CHANGED"]:
             df.at[index, 'S_COLOR'] = 'blue'; continue
             
-        # תנאי 3: הזמנה שנכשלה ב-Ecom
         if ecom != 'SUCCESS' and all(s == "" for s in [oper, cust, fin, talma, update]):
             df.at[index, 'S_COLOR'] = 'blue'; continue
 
-        # הגדרה 3: Safe Cancellation - ירוק אוטומטי (קנס 0)
+        # הגדרה 3: Safe Cancellation
         if (ecom == 'SUCCESS' and oper == 'CANCELLED' and cust == 'UNDER_SAFE_CANCELLATION' and update == 'UNDER_TICKET_RULE' and single_penalty == 0):
             df.at[index, 'S'] = round(grand_total - accelya_base, 2)
             df.at[index, 'S_COLOR'] = 'green'
@@ -119,29 +121,28 @@ def process_data(df):
         # --- שלב תיקון אקסליה (Addition Only) ---
         adjusted_accelya = accelya_base
         
-        # הגדרה 10: תיקון טרולי אל-על (הוספה לאקסליה)
+        # הגדרה 10: טרולי אל-על
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
             adjusted_accelya += total_extras
-            df.at[index, 'CHECK_COMMENTS'] += " | LY CarryOn Added"
+            df.at[index, 'CHECK_COMMENTS'] += " | LY CarryOn Adj"
 
-        # הגדרה 4: חוק המזוודות (הוספה לאקסליה לחברות ספציפיות)
+        # הגדרה 4: חוק המזוודות
         if airline in luggage_airlines and 'luggage' in extra_cat_raw:
             adjusted_accelya += total_extras
-            df.at[index, 'CHECK_COMMENTS'] += " | Luggage Added"
+            df.at[index, 'CHECK_COMMENTS'] += " | Luggage Adj"
 
         # --- שלב החישוב והשוואה ---
         if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
             if final_status == 'UNDER_AIRLINE_REFUND':
                 res = grand_total - adjusted_accelya
-            else: # TICKET_RULE
-                # הגדרה 11: החרגת PNR מספרי בלבד עם קנס 0 -> ירוק
+            else: # TICKET_RULE / MEDICAL_CANCELLATION
+                # הגדרה 11: PNR מספרי בלבד עם קנס 0
                 pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
                 if pnr_is_only_digits and single_penalty == 0:
                     res = grand_total - adjusted_accelya
                     df.at[index, 'S_COLOR'] = 'green'
                     df.at[index, 'CHECK_COMMENTS'] += " | Numeric PNR OK"
                 elif single_penalty > 0:
-                    # הגדרה 6: חישוב בניכוי קנסות
                     expected = grand_total - (single_penalty * pax_count)
                     res = expected - adjusted_accelya
                 else:
@@ -153,7 +154,7 @@ def process_data(df):
             elif df.at[index, 'S_COLOR'] == 'green':
                 df.at[index, 'S'] = round(res, 2)
 
-        # הגדרה 7+8: חישוב אחוזים (Consumer Law / Partial)
+        # הגדרה 7+8: אחוזים
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
             ratio = adjusted_accelya / grand_total if grand_total != 0 else 0
             df.at[index, 'S'] = f"{ratio:.2%}"
@@ -164,16 +165,16 @@ def process_data(df):
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Purple Rain v5.2", layout="centered")
+st.set_page_config(page_title="Purple Rain v5.3", layout="centered")
 apply_custom_style()
 
 st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>V5.2 | Full Logic | Addition Mode | Active Status Included</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>V5.3 | Medical Cancellation Logic Included</p>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner("Executing Audit..."):
+    with st.spinner("Processing Audit..."):
         try:
             df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
             processed_df = process_data(df)
@@ -193,6 +194,6 @@ if uploaded_file:
                     if color in formats: worksheet.set_row(row_num, None, formats[color])
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_V5.2_{uploaded_file.name}.xlsx")
+            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_V5.3_{uploaded_file.name}.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")

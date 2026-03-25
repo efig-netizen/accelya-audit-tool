@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import re  # ספרייה לבדיקת תבניות טקסט (עבור PNR מספרי)
 
 # --- 1. הגדרות עיצוב לממשק (Purple Rain Edition) ---
 def apply_custom_style():
@@ -33,7 +34,6 @@ def apply_custom_style():
             font-family: 'Trebuchet MS', sans-serif;
             text-shadow: 3px 3px 6px #000000;
             font-size: 3.5rem;
-            margin-bottom: 0px;
         }
         .subtitle {
             text-align: center;
@@ -50,20 +50,20 @@ def apply_custom_style():
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד המרכזית (כל ההגדרות 0-10) ---
+# --- 2. לוגיקת העיבוד המרכזית (הגדרות 0-11) ---
 def process_data(df):
-    # הגדרה 0: נרמול עמודות
+    # הגדרה 0: נרמול עמודות (Upper + Strip)
     df.columns = [str(c).strip().upper() for c in df.columns]
     
     df['S'] = ""
     df['S_COLOR'] = ""
     df['CHECK_COMMENTS'] = ""
 
-    # רשימת חברות להחרגת מזוודות (הגדרה 4)
+    # הגדרה 4: חברות תעופה להחרגת מזוודות (Base Amount)
     luggage_airlines = ['J2', 'GQ', 'AZ', 'LA', 'UX', 'EY']
 
     for index, row in df.iterrows():
-        # המרה לערך מוחלט חיובי (Absolute Value) - הכרחי לחישובים המעודכנים
+        # --- המרה לערכים מספריים (שימוש בערך מוחלט לאקסליה) ---
         acc_raw = row.get('ACCELYA AMOUNT', 0)
         accelya_abs = abs(pd.to_numeric(acc_raw, errors='coerce') or 0)
         
@@ -72,6 +72,7 @@ def process_data(df):
         pax_count = pd.to_numeric(row.get('ACTIVEPASSENGERSCOUNT', 0), errors='coerce') or 1
         total_extras = pd.to_numeric(row.get('TOTALEXTRAS', 0), errors='coerce') or 0
         
+        # פונקציית עזר לניקוי טקסט
         def get_val(col):
             val = str(row.get(col, '')).strip().upper()
             return "" if val in ['NAN', 'NONE', 'NULL'] else val
@@ -84,8 +85,9 @@ def process_data(df):
         fin = get_val('FINANCEORDERSTATUS')
         airline = get_val('OUTAIRLINES')
         extra_cat = get_val('EXTRA_CATEGORIES')
+        search_pnr = str(row.get('SEARCHPNR', '')).strip()
 
-        # הגדרה 9 & 1: מנגנון הגיבוי ובדיקת סתירות (החמרה לטובת Refund)
+        # הגדרה 9 & 1: בדיקת סתירות סטטוסים והחמרה לטובת Refund
         statuses = [cust, update]
         if 'UNDER_AIRLINE_REFUND' in statuses and any(s in statuses for s in ['UNDER_TICKET_RULE', 'UNDER_PARTIAL_AIRLINE_REFUND', 'UNDER_CONSUMER_LAW']):
             final_status = 'UNDER_AIRLINE_REFUND'
@@ -111,43 +113,49 @@ def process_data(df):
             single_penalty == 0):
             df.at[index, 'S'] = round(grand_total - accelya_abs, 2)
             df.at[index, 'S_COLOR'] = 'green'
-            df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation"
+            df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation - OK"
             continue
 
-        # --- שלב החישובים הכספיים (SUCCESS בלבד) ---
+        # --- תחילת בדיקות כספיות (רק אם ECOM הצליח) ---
         if ecom == 'SUCCESS':
             
-            # הגדרה 10: תיקון סכום אקסליה עבור אל-על (הוספת Extras למונה/למחסר)
+            # הגדרה 10: תיקון LY Carry-On (הוספת Extras לאקסליה לצורך חישוב הוגן)
             is_ly_carryon = (airline == 'LY' and extra_cat == 'carryOnLuggage')
             effective_accelya = accelya_abs + total_extras if is_ly_carryon else accelya_abs
-            
             if is_ly_carryon:
-                df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | LY Carry-On Added").strip(" | ")
+                df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | LY Carry-On Adjusted").strip(" | ")
 
-            # הגדרה 4: חוק המזוודות (הפחתה מהטוטאל ל-J2 וחברותיה)
+            # הגדרה 4: חוק המזוודות (הפחתה מה-Base Amount עבור J2 וכו')
             apply_luggage = airline in luggage_airlines and extra_cat.lower() == 'luggage'
             base_amount = grand_total - total_extras if apply_luggage else grand_total
             if apply_luggage:
-                df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Luggage Base Adj").strip(" | ")
+                df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Luggage Base Reduction").strip(" | ")
 
-            # הגדרה 5 + 6: חישובים שקליים (Refund / Ticket Rule)
-            if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
-                if final_status == 'UNDER_AIRLINE_REFUND':
-                    res = base_amount - effective_accelya
-                else: # TICKET_RULE
-                    if single_penalty > 0:
-                        res = (base_amount - (single_penalty * pax_count)) - effective_accelya
-                    else:
-                        res = 0
-                        df.at[index, 'S_COLOR'] = 'purple'
-                        df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Missing Penalty Data").strip(" | ")
-                
+            # --- חישובים לפי סטטוס ---
+            if final_status == 'UNDER_AIRLINE_REFUND':
+                res = base_amount - effective_accelya
                 df.at[index, 'S'] = round(res, 2)
-                # צביעה לפי טווח (300- עד 50+)
-                if df.at[index, 'S_COLOR'] != 'purple':
-                    df.at[index, 'S_COLOR'] = 'green' if -300 <= res <= 50 else 'red'
+                df.at[index, 'S_COLOR'] = 'green' if -300 <= res <= 50 else 'red'
 
-            # הגדרה 7 + 8: חישוב אחוזים (Consumer Law / Partial)
+            elif final_status == 'UNDER_TICKET_RULE':
+                # הגדרה 11: החרגת PNR שמכיל ספרות בלבד עם קנס 0
+                pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
+                
+                if pnr_is_only_digits and single_penalty == 0:
+                    res = base_amount - effective_accelya
+                    df.at[index, 'S'] = round(res, 2)
+                    df.at[index, 'S_COLOR'] = 'green'
+                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Numeric PNR Zero Penalty").strip(" | ")
+                elif single_penalty > 0:
+                    res = (base_amount - (single_penalty * pax_count)) - effective_accelya
+                    df.at[index, 'S'] = round(res, 2)
+                    df.at[index, 'S_COLOR'] = 'green' if -300 <= res <= 50 else 'red'
+                else:
+                    # הגנת ה"סגול" - חסר קנס ב-Ticket Rule
+                    df.at[index, 'S'] = "N/A (No Penalty)"
+                    df.at[index, 'S_COLOR'] = 'purple'
+                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Missing Penalty Data").strip(" | ")
+
             elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
                 ratio = effective_accelya / grand_total if grand_total != 0 else 0
                 df.at[index, 'S'] = f"{ratio:.2%}"
@@ -157,24 +165,23 @@ def process_data(df):
                 else: # PARTIAL
                     df.at[index, 'S_COLOR'] = 'green' if ratio >= 0.25 else 'red'
                 
-                # בדיקה ידנית מעל 200%
                 if ratio > 2.0:
                     df.at[index, 'S_COLOR'] = 'purple'
-                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Manual Check > 200%").strip(" | ")
+                    df.at[index, 'CHECK_COMMENTS'] = (df.at[index, 'CHECK_COMMENTS'] + " | Check Manual > 200%").strip(" | ")
 
     return df
 
 # --- 3. ממשק האפליקציה (Streamlit) ---
-st.set_page_config(page_title="Purple Rain Auditor v4.0", layout="wide")
+st.set_page_config(page_title="Purple Rain Auditor v4.2", layout="wide")
 apply_custom_style()
 
-st.markdown("<h1>☔ Purple Rain Auditor v4.0</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>The Complete Audit Engine | 11 Business Rules Applied</p>", unsafe_allow_html=True)
+st.markdown("<h1>☔ Purple Rain Auditor v4.2</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>The Ultimate Audit Logic - All 12 Rules Integrated</p>", unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("Upload Snowflake Data", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("Upload Snowflake Data (CSV or Excel)", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner('🎸 Running audit logic...'):
+    with st.spinner('🎸 Auditing through the rain...'):
         try:
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
@@ -183,12 +190,13 @@ if uploaded_file:
             
             processed_df = process_data(df)
             
+            # יצירת אקסל בזיכרון
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                processed_df.to_excel(writer, index=False, sheet_name='Audit_Report')
-                workbook, worksheet = writer.book, writer.sheets['Audit_Report']
+                processed_df.to_excel(writer, index=False, sheet_name='Audit_Results')
+                workbook, worksheet = writer.book, writer.sheets['Audit_Results']
                 
-                # עיצובים לאקסל
+                # פורמטים לצביעה
                 formats = {
                     'green': workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'}),
                     'red': workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'}),
@@ -201,15 +209,15 @@ if uploaded_file:
                     if color in formats:
                         worksheet.set_row(row_num, None, formats[color])
 
-            st.success("✅ Analysis Complete! You can now download the results.")
+            st.success("✅ Audit Complete!")
             st.download_button(
-                label="📥 Download Final Audit (v4.0)",
+                label="📥 Download Audit Report (v4.2)",
                 data=output.getvalue(),
-                file_name="Purple_Rain_Final_Report.xlsx",
+                file_name="Purple_Rain_Final_Audit.xlsx",
                 mime="application/vnd.ms-excel"
             )
         except Exception as e:
             st.error(f"❌ Error during processing: {e}")
 
 st.write("---")
-st.caption("Purple Rain Auditor v4.0 | Fully Optimized logic for LY Carry-On and Status Conflicts.")
+st.caption("Purple Rain Auditor v4.2 | Logic by User Intent | 2026")

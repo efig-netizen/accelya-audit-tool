@@ -20,9 +20,9 @@ def apply_custom_style():
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד המרכזית (v5.4 - פתרון שגיאת Float/String) ---
+# --- 2. לוגיקת העיבוד המרכזית (v5.5 - טיפול סופי ב-Dtype) ---
 def process_data(df):
-    # הגדרה 0: נרמול עמודות
+    # נרמול עמודות - הפיכת כל השמות ל-String נקי
     df.columns = [str(c).strip().upper() for c in df.columns]
     df['S'] = ""
     df['S_COLOR'] = ""
@@ -31,22 +31,20 @@ def process_data(df):
     luggage_airlines = ['J2', 'GQ', 'AZ', 'LA', 'UX', 'EY']
 
     for index, row in df.iterrows():
-        # הגדרה 5: אקסליה לפלוס
-        acc_raw = row.get('ACCELYA AMOUNT', 0)
-        accelya_base = abs(pd.to_numeric(acc_raw, errors='coerce') or 0)
+        # המרה בטוחה של מספרים - אם זה לא מספר, יחזור 0
+        def to_num(val):
+            return pd.to_numeric(val, errors='coerce') or 0
+
+        accelya_base = abs(to_num(row.get('ACCELYA AMOUNT')))
+        grand_total = to_num(row.get('GRANDTOTAL'))
+        single_penalty = to_num(row.get('SINGLEPENALTYFEE'))
+        pax_count = to_num(row.get('ACTIVEPASSENGERSCOUNT')) or 1
+        total_extras = to_num(row.get('TOTALEXTRAS'))
         
-        grand_total = pd.to_numeric(row.get('GRANDTOTAL', 0), errors='coerce') or 0
-        single_penalty = pd.to_numeric(row.get('SINGLEPENALTYFEE', 0), errors='coerce') or 0
-        pax_count = pd.to_numeric(row.get('ACTIVEPASSENGERSCOUNT', 0), errors='coerce') or 1
-        total_extras = pd.to_numeric(row.get('TOTALEXTRAS', 0), errors='coerce') or 0
-        
-        # --- תיקון השגיאה: המרה כפויה ל-String וטיפול ב-NaN ---
+        # המרה בטוחה של טקסטים - מבטיח שכל תא יטופל כסטרינג
         def get_val(col):
-            val = row.get(col, "")
-            if pd.isna(val) or val is None:
-                return ""
-            # הפיכה לטקסט וניקוי רווחים
-            return str(val).strip().upper()
+            v = row.get(col, "")
+            return str(v).strip().upper() if pd.notna(v) else ""
 
         ecom = get_val('ECOMMERCEORDERSTATUS')
         cust = get_val('CUSTOMERORDERSTATUS')
@@ -55,22 +53,20 @@ def process_data(df):
         talma = get_val('TALMAORDERSTATUS')
         fin = get_val('FINANCEORDERSTATUS')
         airline = get_val('OUTAIRLINES')
-        
-        # המרה לטקסט קטן עבור חיפוש קטגוריות
-        extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower() if pd.notna(row.get('EXTRA_CATEGORIES')) else ""
-        search_pnr = str(row.get('SEARCHPNR', '')).strip() if pd.notna(row.get('SEARCHPNR')) else ""
+        extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower()
+        search_pnr = str(row.get('SEARCHPNR', '')).strip()
 
-        # הגדרה 1+9+12: סטטוס סופי (כולל MEDICAL_CANCELLATION)
+        # סטטוס סופי
         statuses = [cust, update]
         if 'UNDER_AIRLINE_REFUND' in statuses:
             final_status = 'UNDER_AIRLINE_REFUND'
         elif 'MEDICAL_CANCELLATION' in statuses:
             final_status = 'UNDER_TICKET_RULE'
-            df.at[index, 'CHECK_COMMENTS'] = "Medical Cancellation Mode"
+            df.at[index, 'CHECK_COMMENTS'] = "Medical Cancellation"
         else:
             final_status = cust if cust != "" else update
 
-        # הגדרה 2: החרגות כחולות (כולל ACTIVE)
+        # החרגות כחולות
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'; continue
         if oper == 'ACTIVE' and all(s == "" for s in [cust, fin, talma]) and update in ["", "ORDER_TRIP_CHANGED"]:
@@ -78,37 +74,36 @@ def process_data(df):
         if ecom != 'SUCCESS' and all(s == "" for s in [oper, cust, fin, talma, update]):
             df.at[index, 'S_COLOR'] = 'blue'; continue
 
-        # הגדרה 3: Safe Cancellation
+        # Safe Cancellation
         if (ecom == 'SUCCESS' and oper == 'CANCELLED' and cust == 'UNDER_SAFE_CANCELLATION' and update == 'UNDER_TICKET_RULE' and single_penalty == 0):
             df.at[index, 'S'] = round(grand_total - accelya_base, 2)
             df.at[index, 'S_COLOR'] = 'green'
             df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation"
             continue
 
-        # --- שלב תיקון אקסליה (Addition Only) ---
-        adjusted_accelya = accelya_base
+        # תיקון אקסליה (Addition Only)
+        adj_accelya = accelya_base
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
-            adjusted_accelya += total_extras
+            adj_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | LY CarryOn Adj"
         if airline in luggage_airlines and 'luggage' in extra_cat_raw:
-            adjusted_accelya += total_extras
+            adj_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | Luggage Adj"
 
-        # --- שלב החישוב ---
+        # חישובים
         if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
             if final_status == 'UNDER_AIRLINE_REFUND':
-                res = grand_total - adjusted_accelya
+                res = grand_total - adj_accelya
             else: # TICKET_RULE / MEDICAL
                 pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
                 if pnr_is_only_digits and single_penalty == 0:
-                    res = grand_total - adjusted_accelya
+                    res = grand_total - adj_accelya
                     df.at[index, 'S_COLOR'] = 'green'
                     df.at[index, 'CHECK_COMMENTS'] += " | Numeric PNR OK"
                 elif single_penalty > 0:
-                    expected = grand_total - (single_penalty * pax_count)
-                    res = expected - adjusted_accelya
+                    res = (grand_total - (single_penalty * pax_count)) - adj_accelya
                 else:
-                    res = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | No Penalty Data"
+                    res = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | Missing Penalty"
 
             if df.at[index, 'S_COLOR'] not in ['purple', 'green']:
                 df.at[index, 'S'] = round(res, 2)
@@ -117,7 +112,7 @@ def process_data(df):
                 df.at[index, 'S'] = round(res, 2)
 
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
-            ratio = adjusted_accelya / grand_total if grand_total != 0 else 0
+            ratio = adj_accelya / grand_total if grand_total != 0 else 0
             df.at[index, 'S'] = f"{ratio:.2%}"
             limit = 0.90 if final_status == 'UNDER_CONSUMER_LAW' else 0.25
             df.at[index, 'S_COLOR'] = 'green' if ratio >= limit else 'red'
@@ -126,22 +121,23 @@ def process_data(df):
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Purple Rain v5.4", layout="centered")
+st.set_page_config(page_title="Purple Rain v5.5", layout="centered")
 apply_custom_style()
 
 st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>V5.4 | Dtype Fix | All Rules Included</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>V5.5 | Final Dtype Shield</p>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner("Analyzing Data..."):
+    with st.spinner("Processing Data..."):
         try:
-            # הוספת dtype=str מבטיחה שכל עמודות הטקסט ייקראו נכון
+            # התיקון הקריטי: קריאת כל העמודות כטקסט מראש למניעת שגיאת Float
             if uploaded_file.name.endswith('.csv'):
-                df = pd.read_csv(uploaded_file)
+                df = pd.read_csv(uploaded_file, dtype=str)
             else:
-                df = pd.read_excel(uploaded_file)
+                # באקסל משתמשים ב-dtype=str כדי להבטיח שכל תא ייקרא כטקסט
+                df = pd.read_excel(uploaded_file, dtype=str)
             
             processed_df = process_data(df)
             
@@ -160,6 +156,6 @@ if uploaded_file:
                     if color in formats: worksheet.set_row(row_num, None, formats[color])
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_Fixed_{uploaded_file.name}.xlsx")
+            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_Final_{uploaded_file.name}.xlsx")
         except Exception as e:
-            st.error(f"Error: {e}")
+            st.error(f"שגיאה בקריאת הקובץ: {e}")

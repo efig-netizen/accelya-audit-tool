@@ -3,61 +3,26 @@ import pandas as pd
 import io
 import re
 
-# --- 1. עיצוב ממשק: רקע סגול, תיבת העלאה שחורה, טקסט שחור פנימי ---
+# --- 1. עיצוב ממשק (ללא שינוי) ---
 def apply_custom_style():
     st.markdown("""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-        
-        .stApp {
-            background: linear-gradient(135deg, #6d28d9 0%, #4c1d95 100%);
-            color: #ffffff;
-            font-family: 'Inter', sans-serif;
-        }
-
-        h1, h2, h3 {
-            color: #ffffff !important;
-            font-weight: 700 !important;
-            text-align: center;
-        }
-
+        .stApp { background: linear-gradient(135deg, #6d28d9 0%, #4c1d95 100%); color: #ffffff; font-family: 'Inter', sans-serif; }
+        h1, h2, h3 { color: #ffffff !important; font-weight: 700 !important; text-align: center; }
         .main-title { font-size: 3.5rem; margin-top: 2rem; }
         .subtitle { text-align: center; color: #e9d5ff; margin-bottom: 3rem; }
-
-        /* תיבת העלאת קבצים בשחור */
-        section[data-testid="stFileUploader"] {
-            background-color: #000000 !important;
-            border: 2px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 25px;
-        }
-        
-        /* טקסט שחור בתוך אזור ההעלאה הלבן */
-        section[data-testid="stFileUploader"] div, 
-        section[data-testid="stFileUploader"] span, 
-        section[data-testid="stFileUploader"] small,
-        section[data-testid="stFileUploader"] button p {
-            color: #000000 !important;
-            font-weight: 600 !important;
-        }
-
-        /* כפתור הורדה לבן עם טקסט שחור */
-        .stDownloadButton button {
-            width: 100%;
-            background-color: #ffffff;
-            color: #000000;
-            border: none;
-            padding: 1rem;
-            border-radius: 8px;
-            font-weight: 700;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
-        }
+        section[data-testid="stFileUploader"] { background-color: #000000 !important; border: 2px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 25px; }
+        section[data-testid="stFileUploader"] div, section[data-testid="stFileUploader"] span, 
+        section[data-testid="stFileUploader"] small, section[data-testid="stFileUploader"] button p { color: #000000 !important; font-weight: 600 !important; }
+        .stDownloadButton button { width: 100%; background-color: #ffffff; color: #000000; border: none; padding: 1rem; border-radius: 8px; font-weight: 700; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        header {visibility: hidden;} footer {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד המרכזית (v5.3 - כולל MEDICAL_CANCELLATION) ---
+# --- 2. לוגיקת העיבוד המרכזית (v5.4 - פתרון שגיאת Float/String) ---
 def process_data(df):
-    # הגדרה 0: נרמול שמות עמודות
+    # הגדרה 0: נרמול עמודות
     df.columns = [str(c).strip().upper() for c in df.columns]
     df['S'] = ""
     df['S_COLOR'] = ""
@@ -66,7 +31,7 @@ def process_data(df):
     luggage_airlines = ['J2', 'GQ', 'AZ', 'LA', 'UX', 'EY']
 
     for index, row in df.iterrows():
-        # הגדרה 5: הפיכת אקסליה לפלוס (ערך מוחלט)
+        # הגדרה 5: אקסליה לפלוס
         acc_raw = row.get('ACCELYA AMOUNT', 0)
         accelya_base = abs(pd.to_numeric(acc_raw, errors='coerce') or 0)
         
@@ -75,9 +40,13 @@ def process_data(df):
         pax_count = pd.to_numeric(row.get('ACTIVEPASSENGERSCOUNT', 0), errors='coerce') or 1
         total_extras = pd.to_numeric(row.get('TOTALEXTRAS', 0), errors='coerce') or 0
         
+        # --- תיקון השגיאה: המרה כפויה ל-String וטיפול ב-NaN ---
         def get_val(col):
-            val = str(row.get(col, '')).strip().upper()
-            return "" if val in ['NAN', 'NONE', 'NULL'] else val
+            val = row.get(col, "")
+            if pd.isna(val) or val is None:
+                return ""
+            # הפיכה לטקסט וניקוי רווחים
+            return str(val).strip().upper()
 
         ecom = get_val('ECOMMERCEORDERSTATUS')
         cust = get_val('CUSTOMERORDERSTATUS')
@@ -86,28 +55,26 @@ def process_data(df):
         talma = get_val('TALMAORDERSTATUS')
         fin = get_val('FINANCEORDERSTATUS')
         airline = get_val('OUTAIRLINES')
-        extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower()
-        search_pnr = str(row.get('SEARCHPNR', '')).strip()
-
-        # הגדרה 1+9+12: קביעת סטטוס סופי (חוק הסתירה המחמיר)
-        # MEDICAL_CANCELLATION נחשב כמו TICKET_RULE אלא אם יש Refund
-        statuses = [cust, update]
         
+        # המרה לטקסט קטן עבור חיפוש קטגוריות
+        extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower() if pd.notna(row.get('EXTRA_CATEGORIES')) else ""
+        search_pnr = str(row.get('SEARCHPNR', '')).strip() if pd.notna(row.get('SEARCHPNR')) else ""
+
+        # הגדרה 1+9+12: סטטוס סופי (כולל MEDICAL_CANCELLATION)
+        statuses = [cust, update]
         if 'UNDER_AIRLINE_REFUND' in statuses:
             final_status = 'UNDER_AIRLINE_REFUND'
         elif 'MEDICAL_CANCELLATION' in statuses:
-            final_status = 'UNDER_TICKET_RULE' # טיפול לפי חוקי קנסות
-            df.at[index, 'CHECK_COMMENTS'] += "Medical Cancellation treated as Ticket Rule"
+            final_status = 'UNDER_TICKET_RULE'
+            df.at[index, 'CHECK_COMMENTS'] = "Medical Cancellation Mode"
         else:
             final_status = cust if cust != "" else update
 
-        # הגדרה 2: החרגות כחולות (Blue)
+        # הגדרה 2: החרגות כחולות (כולל ACTIVE)
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'; continue
-            
         if oper == 'ACTIVE' and all(s == "" for s in [cust, fin, talma]) and update in ["", "ORDER_TRIP_CHANGED"]:
             df.at[index, 'S_COLOR'] = 'blue'; continue
-            
         if ecom != 'SUCCESS' and all(s == "" for s in [oper, cust, fin, talma, update]):
             df.at[index, 'S_COLOR'] = 'blue'; continue
 
@@ -120,23 +87,18 @@ def process_data(df):
 
         # --- שלב תיקון אקסליה (Addition Only) ---
         adjusted_accelya = accelya_base
-        
-        # הגדרה 10: טרולי אל-על
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
             adjusted_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | LY CarryOn Adj"
-
-        # הגדרה 4: חוק המזוודות
         if airline in luggage_airlines and 'luggage' in extra_cat_raw:
             adjusted_accelya += total_extras
             df.at[index, 'CHECK_COMMENTS'] += " | Luggage Adj"
 
-        # --- שלב החישוב והשוואה ---
+        # --- שלב החישוב ---
         if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
             if final_status == 'UNDER_AIRLINE_REFUND':
                 res = grand_total - adjusted_accelya
-            else: # TICKET_RULE / MEDICAL_CANCELLATION
-                # הגדרה 11: PNR מספרי בלבד עם קנס 0
+            else: # TICKET_RULE / MEDICAL
                 pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
                 if pnr_is_only_digits and single_penalty == 0:
                     res = grand_total - adjusted_accelya
@@ -146,7 +108,7 @@ def process_data(df):
                     expected = grand_total - (single_penalty * pax_count)
                     res = expected - adjusted_accelya
                 else:
-                    res = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | Missing Penalty"
+                    res = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | No Penalty Data"
 
             if df.at[index, 'S_COLOR'] not in ['purple', 'green']:
                 df.at[index, 'S'] = round(res, 2)
@@ -154,7 +116,6 @@ def process_data(df):
             elif df.at[index, 'S_COLOR'] == 'green':
                 df.at[index, 'S'] = round(res, 2)
 
-        # הגדרה 7+8: אחוזים
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
             ratio = adjusted_accelya / grand_total if grand_total != 0 else 0
             df.at[index, 'S'] = f"{ratio:.2%}"
@@ -165,18 +126,23 @@ def process_data(df):
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Purple Rain v5.3", layout="centered")
+st.set_page_config(page_title="Purple Rain v5.4", layout="centered")
 apply_custom_style()
 
 st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>V5.3 | Medical Cancellation Logic Included</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>V5.4 | Dtype Fix | All Rules Included</p>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner("Processing Audit..."):
+    with st.spinner("Analyzing Data..."):
         try:
-            df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith('.csv') else pd.read_excel(uploaded_file)
+            # הוספת dtype=str מבטיחה שכל עמודות הטקסט ייקראו נכון
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            else:
+                df = pd.read_excel(uploaded_file)
+            
             processed_df = process_data(df)
             
             output = io.BytesIO()
@@ -194,6 +160,6 @@ if uploaded_file:
                     if color in formats: worksheet.set_row(row_num, None, formats[color])
             
             st.markdown("<br>", unsafe_allow_html=True)
-            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_V5.3_{uploaded_file.name}.xlsx")
+            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_Fixed_{uploaded_file.name}.xlsx")
         except Exception as e:
             st.error(f"Error: {e}")

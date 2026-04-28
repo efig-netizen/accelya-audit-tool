@@ -3,7 +3,7 @@ import pandas as pd
 import io
 import re
 
-# --- 1. עיצוב ממשק (ללא שינוי) ---
+# --- 1. עיצוב ממשק ---
 def apply_custom_style():
     st.markdown("""
         <style>
@@ -13,16 +13,17 @@ def apply_custom_style():
         .main-title { font-size: 3.5rem; margin-top: 2rem; }
         .subtitle { text-align: center; color: #e9d5ff; margin-bottom: 3rem; }
         section[data-testid="stFileUploader"] { background-color: #000000 !important; border: 2px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 25px; }
-        .stDownloadButton button { width: 100%; background-color: #ffffff; color: #000000; border: none; padding: 1rem; border-radius: 8px; font-weight: 700; }
+        .stDownloadButton button { width: 100%; background-color: #ffffff; color: #000000; border: none; padding: 1rem; border-radius: 8px; font-weight: 700; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
         header {visibility: hidden;} footer {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד (v5.7 - תיקון שגיאת ה-Float) ---
+# --- 2. לוגיקת העיבוד (v5.8 - התיקון הסופי לסוגי נתונים) ---
 def process_data(df):
     # נרמול שמות עמודות
     df.columns = [str(c).strip().upper() for c in df.columns]
     
+    # אתחול עמודות עם ערכי ברירת מחדל כדי למנוע ערבוב סוגים
     df['S'] = ""
     df['S_COLOR'] = ""
     df['CHECK_COMMENTS'] = ""
@@ -30,31 +31,26 @@ def process_data(df):
     luggage_airlines = ['J2', 'GQ', 'AZ', 'LA', 'UX', 'EY']
 
     def to_num(val):
-        """המרה בטוחה למספר"""
-        if pd.isna(val): return 0.0
+        if pd.isna(val) or val == "": return 0.0
         try:
             return float(pd.to_numeric(val, errors='coerce'))
         except:
             return 0.0
 
     def get_val(row, col):
-        """המרה בטוחה לטקסט נקי ללא 'nan' וללא '.0' מיותר"""
         v = row.get(col)
-        if pd.isna(v) or v is None:
-            return ""
+        if pd.isna(v) or v is None: return ""
         s = str(v).strip()
         if s.endswith('.0'): s = s[:-2]
         return s.upper()
 
     for index, row in df.iterrows():
-        # נתונים נומריים
         accelya_base = abs(to_num(row.get('ACCELYA AMOUNT')))
         grand_total = to_num(row.get('GRANDTOTAL'))
         single_penalty = to_num(row.get('SINGLEPENALTYFEE'))
         pax_count = max(to_num(row.get('ACTIVEPASSENGERSCOUNT')), 1)
         total_extras = to_num(row.get('TOTALEXTRAS'))
         
-        # נתוני טקסט
         ecom = get_val(row, 'ECOMMERCEORDERSTATUS')
         cust = get_val(row, 'CUSTOMERORDERSTATUS')
         oper = get_val(row, 'OPERATIONALORDERSTATUS')
@@ -65,7 +61,7 @@ def process_data(df):
         extra_cat_raw = str(row.get('EXTRA_CATEGORIES', '')).lower()
         search_pnr = get_val(row, 'SEARCHPNR')
 
-        # לוגיקת סטטוס
+        # קביעת סטטוס
         if 'UNDER_AIRLINE_REFUND' in [cust, update]:
             final_status = 'UNDER_AIRLINE_REFUND'
         elif 'MEDICAL_CANCELLATION' in [cust, update]:
@@ -74,7 +70,7 @@ def process_data(df):
         else:
             final_status = cust if cust != "" else update
 
-        # החרגות כחולות
+        # החרגות
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'; continue
         if oper == 'ACTIVE' and not any([cust, fin, talma]) and update in ["", "ORDER_TRIP_CHANGED"]:
@@ -84,12 +80,12 @@ def process_data(df):
 
         # Safe Cancellation
         if ecom == 'SUCCESS' and oper == 'CANCELLED' and cust == 'UNDER_SAFE_CANCELLATION' and single_penalty == 0:
-            df.at[index, 'S'] = round(grand_total - accelya_base, 2)
+            df.at[index, 'S'] = str(round(grand_total - accelya_base, 2)) # המרה לסטרינג
             df.at[index, 'S_COLOR'] = 'green'
             df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation"
             continue
 
-        # תיקוני אקסליה
+        # אקסליה
         adj_accelya = accelya_base
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
             adj_accelya += total_extras
@@ -99,25 +95,26 @@ def process_data(df):
             df.at[index, 'CHECK_COMMENTS'] += " | Luggage Adj"
 
         # חישובים
+        res_val = 0
         if final_status in ['UNDER_AIRLINE_REFUND', 'UNDER_TICKET_RULE']:
             if final_status == 'UNDER_AIRLINE_REFUND':
-                res = grand_total - adj_accelya
+                res_val = grand_total - adj_accelya
             else:
                 pnr_is_only_digits = bool(re.fullmatch(r'\d+', search_pnr))
                 if pnr_is_only_digits and single_penalty == 0:
-                    res = grand_total - adj_accelya
+                    res_val = grand_total - adj_accelya
                     df.at[index, 'S_COLOR'] = 'green'
                     df.at[index, 'CHECK_COMMENTS'] += " | Numeric PNR OK"
                 elif single_penalty > 0:
-                    res = (grand_total - (single_penalty * pax_count)) - adj_accelya
+                    res_val = (grand_total - (single_penalty * pax_count)) - adj_accelya
                 else:
-                    res = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | Missing Penalty"
+                    res_val = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | Missing Penalty"
 
             if df.at[index, 'S_COLOR'] not in ['purple', 'green']:
-                df.at[index, 'S'] = round(res, 2)
-                df.at[index, 'S_COLOR'] = 'green' if -300 <= res <= 50 else 'red'
-            elif df.at[index, 'S_COLOR'] == 'green':
-                df.at[index, 'S'] = round(res, 2)
+                df.at[index, 'S'] = str(round(res_val, 2))
+                df.at[index, 'S_COLOR'] = 'green' if -300 <= res_val <= 50 else 'red'
+            else:
+                df.at[index, 'S'] = str(round(res_val, 2))
 
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
             ratio = adj_accelya / grand_total if grand_total != 0 else 0
@@ -129,18 +126,18 @@ def process_data(df):
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Purple Rain v5.7", layout="centered")
+st.set_page_config(page_title="Purple Rain v5.8", layout="centered")
 apply_custom_style()
 
 st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>V5.7 | Float Error Fix</p>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>V5.8 | Stable Export Edition</p>", unsafe_allow_html=True)
 
 uploaded_file = st.file_uploader("", type=['csv', 'xlsx'])
 
 if uploaded_file:
     with st.spinner("Processing..."):
         try:
-            # התיקון: קוראים ללא dtype=str כדי למנוע את השגיאה, הטיפול בטקסט קורה בפנים
+            # טעינה גמישה
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
@@ -148,20 +145,28 @@ if uploaded_file:
             
             processed_df = process_data(df)
             
+            # וידוא שכל עמודות התוצאה הן טקסט לפני כתיבה לאקסל
+            processed_df['S'] = processed_df['S'].astype(str)
+            processed_df['S_COLOR'] = processed_df['S_COLOR'].astype(str)
+            processed_df['CHECK_COMMENTS'] = processed_df['CHECK_COMMENTS'].astype(str)
+            
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 processed_df.to_excel(writer, index=False, sheet_name='Audit')
                 workbook, worksheet = writer.book, writer.sheets['Audit']
+                
                 formats = {
                     'green': workbook.add_format({'bg_color': '#D1FAE5', 'font_color': '#064E3B'}),
                     'red': workbook.add_format({'bg_color': '#FEE2E2', 'font_color': '#7F1D1D'}),
                     'blue': workbook.add_format({'bg_color': '#DBEAFE', 'font_color': '#1E3A8A'}),
                     'purple': workbook.add_format({'bg_color': '#F3E8FF', 'font_color': '#581C87'})
                 }
+                
                 for row_num in range(1, len(processed_df) + 1):
                     color = processed_df.iloc[row_num-1]['S_COLOR']
-                    if color in formats: worksheet.set_row(row_num, None, formats[color])
+                    if color in formats:
+                        worksheet.set_row(row_num, None, formats[color])
             
             st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_{uploaded_file.name}.xlsx")
         except Exception as e:
-            st.error(f"שגיאה: {e}")
+            st.error(f"Error: {e}")

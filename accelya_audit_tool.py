@@ -3,27 +3,68 @@ import pandas as pd
 import io
 import re
 
-# --- 1. עיצוב ממשק ---
+# --- 1. עיצוב ממשק מודרני ונקי (Professional Blue & Gray) ---
 def apply_custom_style():
     st.markdown("""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
-        .stApp { background: linear-gradient(135deg, #6d28d9 0%, #4c1d95 100%); color: #ffffff; font-family: 'Inter', sans-serif; }
-        h1, h2, h3 { color: #ffffff !important; font-weight: 700 !important; text-align: center; }
-        .main-title { font-size: 3.5rem; margin-top: 2rem; }
-        .subtitle { text-align: center; color: #e9d5ff; margin-bottom: 3rem; }
-        section[data-testid="stFileUploader"] { background-color: #000000 !important; border: 2px solid rgba(255, 255, 255, 0.1); border-radius: 16px; padding: 25px; }
-        .stDownloadButton button { width: 100%; background-color: #ffffff; color: #000000; border: none; padding: 1rem; border-radius: 8px; font-weight: 700; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
-        header {visibility: hidden;} footer {visibility: hidden;}
+        @import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@400;600&display=swap');
+        
+        .stApp { 
+            background-color: #f8fafc; 
+            color: #1e293b; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+        }
+        
+        h1 { 
+            color: #0f172a !important; 
+            font-weight: 600 !important; 
+            text-align: center;
+            margin-bottom: 0.5rem;
+        }
+        
+        .subtitle { 
+            text-align: center; 
+            color: #64748b; 
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+        }
+        
+        /* עיצוב תיבת העלאת הקבצים */
+        section[data-testid="stFileUploader"] { 
+            background-color: #ffffff !important; 
+            border: 1px solid #e2e8f0 !important; 
+            border-radius: 12px; 
+            padding: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        /* עיצוב כפתור ההורדה */
+        .stDownloadButton button { 
+            width: 100%; 
+            background-color: #2563eb !important; 
+            color: white !important; 
+            border: none !important; 
+            padding: 0.75rem !important; 
+            border-radius: 8px !important; 
+            font-weight: 600 !important;
+            transition: all 0.2s ease;
+        }
+        
+        .stDownloadButton button:hover { 
+            background-color: #1d4ed8 !important; 
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        /* הסתרת אלמנטים מיותרים */
+        header {visibility: hidden;} 
+        footer {visibility: hidden;}
         </style>
     """, unsafe_allow_html=True)
 
-# --- 2. לוגיקת העיבוד (v5.8 - התיקון הסופי לסוגי נתונים) ---
+# --- 2. לוגיקת העיבוד (v5.9 - יציבות מלאה) ---
 def process_data(df):
-    # נרמול שמות עמודות
     df.columns = [str(c).strip().upper() for c in df.columns]
     
-    # אתחול עמודות עם ערכי ברירת מחדל כדי למנוע ערבוב סוגים
     df['S'] = ""
     df['S_COLOR'] = ""
     df['CHECK_COMMENTS'] = ""
@@ -70,7 +111,7 @@ def process_data(df):
         else:
             final_status = cust if cust != "" else update
 
-        # החרגות
+        # החרגות (Blue)
         if ecom == 'SUCCESS' and talma in ['REFUND', 'NOT_FOR_REFUND']:
             df.at[index, 'S_COLOR'] = 'blue'; continue
         if oper == 'ACTIVE' and not any([cust, fin, talma]) and update in ["", "ORDER_TRIP_CHANGED"]:
@@ -80,12 +121,12 @@ def process_data(df):
 
         # Safe Cancellation
         if ecom == 'SUCCESS' and oper == 'CANCELLED' and cust == 'UNDER_SAFE_CANCELLATION' and single_penalty == 0:
-            df.at[index, 'S'] = str(round(grand_total - accelya_base, 2)) # המרה לסטרינג
+            df.at[index, 'S'] = str(round(grand_total - accelya_base, 2))
             df.at[index, 'S_COLOR'] = 'green'
             df.at[index, 'CHECK_COMMENTS'] = "Safe Cancellation"
             continue
 
-        # אקסליה
+        # תיקוני אקסליה
         adj_accelya = accelya_base
         if airline == 'LY' and 'carryonluggage' in extra_cat_raw:
             adj_accelya += total_extras
@@ -110,11 +151,9 @@ def process_data(df):
                 else:
                     res_val = 0; df.at[index, 'S_COLOR'] = 'purple'; df.at[index, 'CHECK_COMMENTS'] += " | Missing Penalty"
 
+            df.at[index, 'S'] = str(round(res_val, 2))
             if df.at[index, 'S_COLOR'] not in ['purple', 'green']:
-                df.at[index, 'S'] = str(round(res_val, 2))
                 df.at[index, 'S_COLOR'] = 'green' if -300 <= res_val <= 50 else 'red'
-            else:
-                df.at[index, 'S'] = str(round(res_val, 2))
 
         elif final_status in ['UNDER_CONSUMER_LAW', 'UNDER_PARTIAL_AIRLINE_REFUND']:
             ratio = adj_accelya / grand_total if grand_total != 0 else 0
@@ -126,18 +165,17 @@ def process_data(df):
     return df
 
 # --- 3. ממשק האפליקציה ---
-st.set_page_config(page_title="Purple Rain v5.8", layout="centered")
+st.set_page_config(page_title="Auditor Pro v5.9", layout="centered")
 apply_custom_style()
 
-st.markdown("<h1 class='main-title'>Purple Rain Auditor</h1>", unsafe_allow_html=True)
-st.markdown("<p class='subtitle'>V5.8 | Stable Export Edition</p>", unsafe_allow_html=True)
+st.markdown("<h1>Auditor Report Tool</h1>", unsafe_allow_html=True)
+st.markdown("<p class='subtitle'>Professional Audit System | Clean UI</p>", unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("", type=['csv', 'xlsx'])
+uploaded_file = st.file_uploader("Upload your CSV or Excel file", type=['csv', 'xlsx'])
 
 if uploaded_file:
-    with st.spinner("Processing..."):
+    with st.spinner("Analyzing data..."):
         try:
-            # טעינה גמישה
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
@@ -145,21 +183,21 @@ if uploaded_file:
             
             processed_df = process_data(df)
             
-            # וידוא שכל עמודות התוצאה הן טקסט לפני כתיבה לאקסל
-            processed_df['S'] = processed_df['S'].astype(str)
-            processed_df['S_COLOR'] = processed_df['S_COLOR'].astype(str)
-            processed_df['CHECK_COMMENTS'] = processed_df['CHECK_COMMENTS'].astype(str)
+            # וידוא שכל עמודות התוצאה הן טקסט למניעת שגיאת ה-Float
+            for col in ['S', 'S_COLOR', 'CHECK_COMMENTS']:
+                processed_df[col] = processed_df[col].astype(str)
             
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 processed_df.to_excel(writer, index=False, sheet_name='Audit')
                 workbook, worksheet = writer.book, writer.sheets['Audit']
                 
+                # צבעים עדינים יותר לדוח האקסל
                 formats = {
-                    'green': workbook.add_format({'bg_color': '#D1FAE5', 'font_color': '#064E3B'}),
-                    'red': workbook.add_format({'bg_color': '#FEE2E2', 'font_color': '#7F1D1D'}),
-                    'blue': workbook.add_format({'bg_color': '#DBEAFE', 'font_color': '#1E3A8A'}),
-                    'purple': workbook.add_format({'bg_color': '#F3E8FF', 'font_color': '#581C87'})
+                    'green': workbook.add_format({'bg_color': '#E8F5E9', 'font_color': '#2E7D32'}),
+                    'red': workbook.add_format({'bg_color': '#FFEBEE', 'font_color': '#C62828'}),
+                    'blue': workbook.add_format({'bg_color': '#E3F2FD', 'font_color': '#1565C0'}),
+                    'purple': workbook.add_format({'bg_color': '#F3E5F5', 'font_color': '#7B1FA2'})
                 }
                 
                 for row_num in range(1, len(processed_df) + 1):
@@ -167,6 +205,12 @@ if uploaded_file:
                     if color in formats:
                         worksheet.set_row(row_num, None, formats[color])
             
-            st.download_button("📥 DOWNLOAD AUDIT REPORT", output.getvalue(), f"Audit_{uploaded_file.name}.xlsx")
+            st.markdown("<div style='margin-top: 20px;'></div>", unsafe_allow_html=True)
+            st.download_button(
+                label="📥 DOWNLOAD AUDIT REPORT",
+                data=output.getvalue(),
+                file_name=f"Audit_Final_{uploaded_file.name.split('.')[0]}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         except Exception as e:
             st.error(f"Error: {e}")
